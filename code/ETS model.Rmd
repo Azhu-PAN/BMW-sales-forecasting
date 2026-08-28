@@ -1,0 +1,198 @@
+---
+title: "ETS modelling for BMW monthly sales"
+author: "Chuanlin Qin z5596247"
+date: "2026-04-09"
+output: html_document
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r library}
+library(fpp3)
+library(tsibble)
+library(feasts)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+```
+
+```{r data }
+bmw_data <- read_csv("bmw_global_sales_2018_2025.csv")
+bmw_ts <- bmw_data |>
+  mutate(Month_Index = yearmonth(paste(Year, Month, sep = "-"))) |>
+  group_by(Month_Index) |>
+  summarise(Total_Units_Sold = sum(Units_Sold)) |>
+  as_tsibble(index = Month_Index)
+
+tp <- bmw_ts |>
+  autoplot(Total_Units_Sold) +
+  labs(
+    title = "BMW Global Monthly Sales (2018-2025)",
+    x = "Date",
+    y = "Total_Units_Sold"
+  )
+
+tp
+
+```
+
+## ETS model Selection
+Because the series appears to have both trend and seasonality, we compare several ETS models:
+
+(a) ETS(A,A,A): addictive error, additive trend, additive seasonality;
+
+(b) ETS(A,Ad,A): addictive error, damped trend, additive seasonality;
+
+(c) ETS(A,A,M): addictive error, additive trend, multiplicative seasonality;
+
+(d) ETS(A,Ad,M): addictive error, damped trend, multiplicative seasonality;
+
+(e) ETS(M,A,A): multiplicative error, additive trend, additive seasonality;
+
+(f) ETS(M,Ad,A): multiplicative error, damped trend, additive seasonality;
+
+(g) ETS(M,A,M): multiplicative error, additive trend, multiplicative seasonality;
+
+(h) ETS(M,Ad,M): multiplicative error, damped trend, multiplicative seasonality;
+
+(i) Auto ETS: automatically selected by R.
+
+```{r , echo=FALSE}
+fit_ets <- bmw_ts |>
+  model(
+    `ETS(A,A,A)`  = ETS(Total_Units_Sold ~ error("A") + trend("A")  + season("A")),
+    `ETS(A,Ad,A)` = ETS(Total_Units_Sold ~ error("A") + trend("Ad") + season("A")),
+    `ETS(A,A,M)`  = ETS(Total_Units_Sold ~ error("A") + trend("A")  + season("M")),
+    `ETS(A,Ad,M)` = ETS(Total_Units_Sold ~ error("A") + trend("Ad") + season("M")),
+    `ETS(M,A,A)`  = ETS(Total_Units_Sold ~ error("M") + trend("A")  + season("A")),
+    `ETS(M,Ad,A)` = ETS(Total_Units_Sold ~ error("M") + trend("Ad") + season("A")),
+    `ETS(M,A,M)`  = ETS(Total_Units_Sold ~ error("M") + trend("A")  + season("M")),
+    `ETS(M,Ad,M)` = ETS(Total_Units_Sold ~ error("M") + trend("Ad") + season("M")),
+    `Auto ETS`    = ETS(Total_Units_Sold)
+  )
+
+fit_ets
+```
+
+We fitted a range of exponential smoothing models to the monthly BMW global sales series and selected the preferred specification using information criteria (AIC, AICc, and BIC). The best-performing ETS model was ETS(M,A,M), which includes multiplicative errors, an additive trend, and multiplicative seasonality. This is consistent with the visual features of the series, which shows both an upward trend and recurring monthly seasonal fluctuations. 
+
+
+```{r, echo = TRUE}
+ets_compare <- fit_ets |>
+  glance() |>
+  select(.model, AIC, AICc, BIC) |>
+  arrange(AICc)
+
+ets_compare
+
+```
+
+
+Next, we detail the report for all models. Among the candidate ETS specifications, we can see that ETS(M,A,M) was selected that ETS(M,A,M) has the lowest MSE, AMSE, and MAE, suggesting that it had the smallest in-sample forecasting errors among the candidate models.
+
+
+Since the ETS(M,A,M) model not only produced the lowest AIC, AICc, and BIC values, indicating the best trade-off between goodness-of-fit and model parsimony,but also achieved the lowest MSE, AMSE, and MAE, suggesting that it had the smallest in-sample forecasting errors among the candidate models, we choose ETS(M,A,M) as the preferred model for modelling the monthly sales series.
+
+```{r, echo = TRUE}
+report(fit_ets)
+```
+
+
+Then we fitted the monthly sale series of BMW by ETS(M,A,M) model. The result is as below.
+
+```{r, echo = TRUE}
+
+fit_auto <- bmw_ts |>
+  model(`ETS(M,A,M)` = ETS(Total_Units_Sold ~ error("M") + trend("A") + season("M")))
+
+# 获取拟合值
+fitted_data <- augment(fit_auto)
+
+# 绘图
+fitted_data |>
+  autoplot() +
+  geom_line(aes(y = .fitted, color = "Fitted"), linewidth = 0.8, alpha = 0.8) +
+  labs(
+    title = "BMW Sales: Actual vs Fitted Values ETS(M,A,M)",
+    x = "Date",
+    y = "Total Units Sold"
+  ) +
+  scale_color_manual(values = c("Fitted" = "red"))
+  
+```
+
+Moreover, we can forecast the next 12 months' BMW monthly sale data. Next, we showed the results with 70%, 80%, 95% PI.
+
+```{r, echo = TRUE}
+
+fc_ets <- fit_auto |>
+  forecast(h = "12 months", level = c(70, 80, 95))
+
+fc_ets |>
+  autoplot(bmw_ts, level = c(70, 80, 95)) +
+  labs(
+    title = "12-Month Forecast from ETS(M,A,M) Model",
+    x = "Date",
+    y = "Total Units Sold"
+  )
+
+```
+
+To estimate the effectiveness of our preferred ETS(M,A,M) model, we do the residual diagnostics for it. Residual diagnostics suggest that the model provides an adequate fit. Since the innovation residuals show no obvious systematic pattern, and its residual autocorrelations are generally small, and the Ljung–Box test at lag 24 gives a p-value of 0.3316, indicating no strong evidence of remaining autocorrelation. Therefore, the residuals can be regarded as approximately white noise. And our forecasting results can be considered effective.
+
+```{r, echo = TRUE}
+resid_auto <- residuals(fit_auto)
+
+# Standardised innovation residuals
+std_resid <- resid_auto |>
+  mutate(std_resid = .resid / sd(.resid, na.rm = TRUE))
+
+p1 <- std_resid |>
+  autoplot(std_resid) +
+  labs(
+    title = "Standardised Innovation Residuals",
+    x = "Date",
+    y = "Std Residual"
+  )
+
+p2 <- resid_auto |>
+  ACF() |>
+  autoplot() +
+  labs(title = "ACF of Residuals")
+
+p4 <- std_resid |>
+  ACF() |>
+  autoplot() +
+  labs(title = "ACF of Innovation Residuals")
+
+p3 <- std_resid |>
+  ggplot(aes(sample = std_resid)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(title = "Normal Q-Q Plot")
+
+
+
+p1 / p2 /p4 / p3
+
+
+Box.test(
+  na.omit(resid_auto$.resid),
+  lag = 24,
+  type = "Ljung-Box",
+  fitdf = 0
+)
+
+report(fit_auto)
+
+```
+
+
+
+
+
+

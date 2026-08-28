@@ -1,0 +1,530 @@
+---
+title: "Data cleaning & distribution"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-04-06"
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	cache = FALSE,
+	comment = ""
+)
+```
+
+```{r libraries, echo = F,include =F}
+library(fpp3)
+library(tsibble)
+library(feasts)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+```
+
+# 1.Data Cleaning
+
+```{r include=FALSE}
+bmw_data <- read_csv("bmw_global_sales_2018_2025.csv")
+bmw_ts <- bmw_data |>
+  mutate(Month_Index = yearmonth(paste(Year, Month, sep = "-"))) |>
+  group_by(Month_Index) |>
+  summarise(Total_Units_Sold = sum(Units_Sold)) |>
+  as_tsibble(index = Month_Index)
+
+head(bmw_ts)
+```
+
+# 2.Data Description
+
+## 1.1 Overall statistics
+
+```{r}
+overall_stats <- bmw_ts |>
+  as_tibble() |> 
+  summarise(
+    Count = n(),
+    Mean_Sales = mean(Total_Units_Sold),
+    Median_Sales = median(Total_Units_Sold),
+    Min_Sales = min(Total_Units_Sold),
+    Max_Sales = max(Total_Units_Sold),
+    SD_Sales = sd(Total_Units_Sold) 
+  )
+
+overall_stats
+```
+
+## 1.2 Plot  
+
+```{r}
+bmw_plot <- bmw_ts |>
+  autoplot(Total_Units_Sold) +
+  labs(title = "BMW Global Monthly Sales (2018-2025)",
+       y = "Total Units Sold",
+       x = "Date")
+
+
+
+bmw_acf <- bmw_ts |>
+  ACF(Total_Units_Sold, lag_max = 36) |>
+  autoplot() +
+  labs(title = "ACF of BMW Global Monthly Sales")
+
+bmw_plot/bmw_acf
+
+
+```
+
+
+```{r }
+bmw_ts |>
+  model(
+    STL(Total_Units_Sold ~ trend(window = 13) + season(window = "periodic"))
+  ) |>
+  components() |>
+  autoplot() +
+  labs(
+    title = "STL Decomposition of BMW Global Monthly Sales",
+    x = "Date",
+    y = "Units Sold"
+  )
+
+
+```
+
+# 2. EST Model Selection
+
+Because the series appears to have both trend and seasonality, we compare several ETS models:
+
+(a) ETS(A,A,A): addictive error, additive trend, additive seasonality;
+
+(b) ETS(A,Ad,A): addictive error, damped trend, additive seasonality;
+
+(c) ETS(A,A,M): addictive error, additive trend, multiplicative seasonality;
+
+(d) ETS(A,Ad,M): addictive error, damped trend, multiplicative seasonality;
+
+(e) ETS(M,A,A): multiplicative error, additive trend, additive seasonality;
+
+(f) ETS(M,Ad,A): multiplicative error, damped trend, additive seasonality;
+
+(g) ETS(M,A,M): multiplicative error, additive trend, multiplicative seasonality;
+
+(h) ETS(M,Ad,M): multiplicative error, damped trend, multiplicative seasonality;
+
+(i) Auto ETS: automatically selected by R.
+
+```{r , echo=FALSE}
+fit_ets <- bmw_ts |>
+  model(
+    `ETS(A,A,A)`  = ETS(Total_Units_Sold ~ error("A") + trend("A")  + season("A")),
+    `ETS(A,Ad,A)` = ETS(Total_Units_Sold ~ error("A") + trend("Ad") + season("A")),
+    `ETS(A,A,M)`  = ETS(Total_Units_Sold ~ error("A") + trend("A")  + season("M")),
+    `ETS(A,Ad,M)` = ETS(Total_Units_Sold ~ error("A") + trend("Ad") + season("M")),
+    `ETS(M,A,A)`  = ETS(Total_Units_Sold ~ error("M") + trend("A")  + season("A")),
+    `ETS(M,Ad,A)` = ETS(Total_Units_Sold ~ error("M") + trend("Ad") + season("A")),
+    `ETS(M,A,M)`  = ETS(Total_Units_Sold ~ error("M") + trend("A")  + season("M")),
+    `ETS(M,Ad,M)` = ETS(Total_Units_Sold ~ error("M") + trend("Ad") + season("M")),
+    `Auto ETS`    = ETS(Total_Units_Sold)
+  )
+
+reprot(fit_ets)
+
+```
+
+## 2.1  ETS models Comparison
+
+We fitted a range of exponential smoothing models to the monthly BMW global sales series and selected the preferred specification using information criteria (AIC, AICc, and BIC). The best-performing ETS model was ETS(M,A,M), which includes multiplicative errors, an additive trend, and multiplicative seasonality. This is consistent with the visual features of the series, which shows both an upward trend and recurring monthly seasonal fluctuations. 
+
+
+```{r echo=FALSE}
+ets_compare <- fit_ets |>
+  glance() |>
+  select(.model, AIC, AICc, BIC) |>
+  arrange(AICc)
+
+kableExtra::kable(ets_compare,digits = 2,font_size = 2, caption = "ETS Models Comparison")
+```
+
+
+Next, we detail the report for all models. Among the candidate ETS specifications, we can see that ETS(M,A,M) was selected that ETS(M,A,M) has the lowest MSE, AMSE, and MAE, suggesting that it had the smallest in-sample forecasting errors among the candidate models.
+
+
+Since the ETS(M,A,M) model not only produced the lowest AIC, AICc, and BIC values, indicating the best trade-off between goodness-of-fit and model parsimony,but also achieved the lowest MSE, AMSE, and MAE, suggesting that it had the smallest in-sample forecasting errors among the candidate models, we choose ETS(M,A,M) as the preferred model for modelling the monthly sales series.
+
+```{r}
+kableExtra::kable(report(fit_ets),digits = 2,font_size = 2, caption = "ETS Models Fitting Results")
+```
+
+## 2.2 ETS Model Fitting
+
+Then we fitted the monthly sale series of BMW by ETS(M,A,M) model. The result is as below.
+
+```{r}
+
+fit_auto <- bmw_ts |>
+  model(`ETS(M,A,M)` = ETS(Total_Units_Sold ~ error("M") + trend("A") + season("M")))
+
+fitted_data <- augment(fit_auto)
+
+fitted_data |>
+  autoplot() +
+  geom_line(aes(y = .fitted, color = "Fitted"), linewidth = 0.8, alpha = 0.8) +
+  labs(
+    title = "BMW Sales: Actual vs Fitted Values ETS(M,A,M)",
+    x = "Date",
+    y = "Total Units Sold"
+  ) +
+  scale_color_manual(values = c("Fitted" = "red"))
+  
+```
+
+Moreover, we can forecast the next 12 months' BMW monthly sale data. Next, we showed the results with 70%, 80%, 95% PI.
+
+```{r}
+
+fc_ets <- fit_auto |>
+  forecast(h = "12 months", level = c(70, 80, 95))
+
+fc_ets |>
+  autoplot(bmw_ts, level = c(70, 80, 95)) +
+  labs(
+    title = "12-Month Forecast from ETS(M,A,M) Model",
+    x = "Date",
+    y = "Total Units Sold"
+  )
+
+```
+
+## 2.3 Residual diagnostics for preferred ETS model
+
+To estimate the effectiveness of our preferred ETS(M,A,M) model, we do the residual diagnostics for it. Residual diagnostics suggest that the model provides an adequate fit. Since the innovation residuals show no obvious systematic pattern, and its residual autocorrelations are generally small, and the Ljung–Box test at lag 24 gives a p-value of 0.3316, indicating no strong evidence of remaining autocorrelation. Therefore, the residuals can be regarded as approximately white noise. And our forecasting results can be considered effective.
+
+```{r}
+resid_auto <- residuals(fit_auto)
+
+# Standardised innovation residuals
+std_resid <- resid_auto |>
+  mutate(std_resid = .resid / sd(.resid, na.rm = TRUE))
+
+p1 <- std_resid |>
+  autoplot(std_resid) +
+  labs(
+    title = "Standardised Innovation Residuals",
+    x = "Date",
+    y = "Std Residual"
+  )
+
+p2 <- resid_auto |>
+  ACF() |>
+  autoplot() +
+  labs(title = "ACF of Residuals")
+
+p4 <- std_resid |>
+  ACF() |>
+  autoplot() +
+  labs(title = "ACF of Innovation Residuals")
+
+p3 <- std_resid |>
+  ggplot(aes(sample = std_resid)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(title = "Normal Q-Q Plot")
+
+
+
+p1 / p2 /p4 / p3
+
+
+Box.test(
+  na.omit(resid_auto$.resid),
+  lag = 24,
+  type = "Ljung-Box",
+  fitdf = 0
+)
+
+report(fit_auto)
+```
+
+# 3. ARIMA model Selection
+
+In this part, we consider to choose an approporiate ARIMA model based on the 2018-2025 BMW Global Monthly Sales series. Since we can already see the trend and seasonality of this series from the time plot of it, we first did 3 types of differencing and checked the stationary.
+
+```{r}
+# do the automatical ARIMA for differencing methods
+fit_auto_arima <- bmw_ts |>
+  model(Auto_ARIMA = ARIMA(Total_Units_Sold))
+
+report(fit_auto_arima)
+
+# check the efficiency
+
+bmw_first_diff <- bmw_ts |>
+  mutate(first_diff = difference(Total_Units_Sold, lag = 1))
+
+pa1 <- bmw_first_diff |>
+  autoplot(first_diff) +
+  labs(
+    title = "First Differenced Series",
+    x = "Date",
+    y = "Differenced Series"
+  )
+
+pa2<-bmw_first_diff |>
+  filter(!is.na(first_diff)) |>
+  ACF(first_diff) |>
+  autoplot() +
+  labs(title = "ACF of First Differenced Series")
+
+pa1/pa2
+#result: 1st differencing is effective
+```
+
+
+## 3.1 Choosing ARIMA Models
+
+We did Seasonal Differencing first (lag = 12), then 1st differencing, then Seasonal Differencing first (lag = 12) + 1st differencing. we discover that Seasonal Differencing can effectively reduce the autocorelation of the series. The first-differenced series still shows substantial seasonal autocorrelation, so regular differencing alone is insufficient. In contrast, the seasonally differenced series appears much closer to stationarity, with the main remaining dependence occurring at lag 12. The series obtained after both seasonal and first differencing shows strong negative autocorrelation at lag 1 and lag 12, suggesting possible over-differencing. Therefore, the ARIMA modelling will primarily focus on seasonal differencing with D=1, while avoiding unnecessary regular differencing.
+
+                
+```{r}
+
+bmw_seasonal_diff <- bmw_ts |>
+  mutate(seasonal_diff = difference(Total_Units_Sold, lag = 12))
+
+pa3 <- bmw_seasonal_diff |>
+  autoplot(seasonal_diff) +
+  labs(
+    title = "Seasonally Differenced Series (lag 12)",
+    x = "Date",
+    y = "Seasonal Difference"
+  )
+
+
+pa4 <- bmw_seasonal_diff |>
+  filter(!is.na(seasonal_diff)) |>
+  ACF(seasonal_diff) |>
+  autoplot() +
+  labs(title = "ACF of Seasonally Differenced Series")
+
+pa3/pa4
+```
+
+
+
+```{r}
+bmw_seas_first_diff <- bmw_ts |>
+  mutate(seas_first_diff = difference(difference(Total_Units_Sold, lag = 12), lag = 1))
+
+pa5<-bmw_seas_first_diff |>
+  autoplot(seas_first_diff) +
+  labs(
+    title = "Seasonal + First Differenced Series",
+    x = "Date",
+    y = "Differenced Series"
+  )
+
+pa6<-bmw_seas_first_diff |>
+  filter(!is.na(seas_first_diff)) |>
+  ACF(seas_first_diff) |>
+  autoplot() +
+  labs(title = "ACF of Seasonal + First Differenced Series")
+
+pa5/pa6
+```
+
+
+By observing the time plots and ACF of the 3 results of differencing, we found that seasonal differencing maybe the most effective way to stationalize the series. But it still can not make it totally stationary. By considering the ETS(M,A,M) model, we can know that the series may be multicatively effected by its trend and seasonality, we can introduce log transformation to address this.
+
+```{r}
+bmw_ts <- bmw_ts |> mutate(Total_Units_Sold_log = log(Total_Units_Sold))
+
+
+pa7 <- bmw_ts |> 
+  autoplot(Total_Units_Sold_log) +
+  labs(
+    title = "BMW Global Monthly Sales log (2018-2025)",
+    x = "Date",
+    y = "Total Units Sold_log"
+  )
+
+pa8<- bmw_ts |> 
+  ACF(Total_Units_Sold_log) |>
+  autoplot() +
+  labs(title = "ACF of log Series")
+
+pa7/pa8
+```
+
+
+For monthly data with seasonality, consider SARIMA models with period 12.
+```{r}
+
+fit_arima <- bmw_ts |>
+  model(
+    #both 1st and seasonal differencing
+    `ARIMA(0,1,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(0,1,1) + PDQ(0,1,1)),
+    `ARIMA(1,1,0)(1,1,0)[12]` = ARIMA(Total_Units_Sold ~ pdq(1,1,0) + PDQ(1,1,0)),
+    `ARIMA(1,1,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(1,1,1) + PDQ(0,1,1)),
+    `ARIMA(0,1,1)(1,1,0)[12]` = ARIMA(Total_Units_Sold ~ pdq(0,1,1) + PDQ(1,1,0)),
+    #only seasonal differencing
+    `ARIMA(0,0,0)(0,1,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(0,0,0) + PDQ(0,1,1)),
+    `ARIMA(1,0,0)(0,1,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(1,0,0) + PDQ(0,1,1)),
+    `ARIMA(0,0,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(0,0,1) + PDQ(0,1,1)),
+    `ARIMA(1,0,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(1,0,1) + PDQ(0,1,1)),
+    #only 1st differencing
+    `ARIMA(0,1,0)(0,0,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(0,1,0) + PDQ(0,0,1)),
+    `ARIMA(1,1,0)(0,0,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(1,1,0) + PDQ(0,0,1)),
+    `ARIMA(0,1,1)(0,0,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(0,1,1) + PDQ(0,0,1)),
+    `ARIMA(1,1,1)(0,0,1)[12]` = ARIMA(Total_Units_Sold ~ pdq(1,1,1) + PDQ(0,0,1)),
+    `Auto ARIMA`              = ARIMA(Total_Units_Sold)
+  )
+
+fit_arima1 <- bmw_ts |>
+  model(
+    #both 1st and seasonal differencing
+    `ARIMA(0,1,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(0,1,1) + PDQ(0,1,1)),
+    `ARIMA(1,1,0)(1,1,0)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(1,1,0) + PDQ(1,1,0)),
+    `ARIMA(1,1,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(1,1,1) + PDQ(0,1,1)),
+    `ARIMA(0,1,1)(1,1,0)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(0,1,1) + PDQ(1,1,0)),
+    #only seasonal differencing
+    `ARIMA(0,0,0)(0,1,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(0,0,0) + PDQ(0,1,1)),
+    `ARIMA(1,0,0)(0,1,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(1,0,0) + PDQ(0,1,1)),
+    `ARIMA(0,0,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(0,0,1) + PDQ(0,1,1)),
+    `ARIMA(1,0,1)(0,1,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(1,0,1) + PDQ(0,1,1)),
+    #only 1st differencing
+    `ARIMA(0,1,0)(0,0,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(0,1,0) + PDQ(0,0,1)),
+    `ARIMA(1,1,0)(0,0,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(1,1,0) + PDQ(0,0,1)),
+    `ARIMA(0,1,1)(0,0,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(0,1,1) + PDQ(0,0,1)),
+    `ARIMA(1,1,1)(0,0,1)[12]` = ARIMA(Total_Units_Sold_log ~ pdq(1,1,1) + PDQ(0,0,1)),
+    `Auto ARIMA`              = ARIMA(Total_Units_Sold_log)
+  )
+
+
+```
+
+
+
+
+
+
+## 3.2 Compare candidate ARIMA models
+```{r}
+arima_compare <- fit_arima |>
+  glance() |>
+  select(.model, AIC, AICc, BIC) |>
+  arrange(AICc)
+
+arima_compare
+
+report(fit_arima)
+
+arima_compare1 <- fit_arima1|>
+  glance() |>
+  select(.model, AIC, AICc, BIC) |>
+  arrange(AICc)
+
+arima_compare1
+
+report(fit_arima1)
+```
+
+
+## 3.3 Residual diagnostics for preferred ARIMA model
+
+```{r}
+fit_best_arima <- bmw_ts |>
+  model(`Auto ARIMA` = ARIMA(Total_Units_Sold))
+
+report(fit_best_arima)
+
+resid_arima <- residuals(fit_best_arima)
+
+std_resid_arima <- resid_arima |>
+  mutate(std_resid = .resid / sd(.resid, na.rm = TRUE))
+
+p1 <- std_resid_arima |>
+  autoplot(std_resid) +
+  labs(title = "Standardised Residuals")
+
+p2 <- resid_arima |>
+  ACF(.resid) |>
+  autoplot() +
+  labs(title = "ACF of Residuals")
+
+p3 <- resid_arima |>
+  PACF(.resid) |>
+  autoplot() +
+  labs(title = "PACF of Residuals")
+
+p4 <- std_resid_arima |>
+  ggplot(aes(sample = std_resid)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(title = "Normal Q-Q Plot")
+
+p1 / p2 
+
+p3 / p4
+
+Box.test(
+  na.omit(resid_arima$.resid),
+  lag = 24,
+  type = "Ljung-Box",
+  fitdf = 0
+)
+
+```
+
+
+## 3.3 Forecast using the preferred ARIMA model
+
+```{r}
+fc_arima <- fit_best_arima |>
+  forecast(h = "12 months", level = c(70, 80, 95))
+
+fc_arima |>
+  autoplot(bmw_ts, level = c(70, 80, 95)) +
+  labs(
+    title = "12-Month Forecast from Preferred ARIMA Model",
+    x = "Date",
+    y = "Total Units Sold"
+  )
+
+```
+
+
+# 4. Compare preferred ARIMA with preferred ETS using time series cross-validation
+
+
+
+```{r}
+fit_cv <- bmw_ts |>
+  stretch_tsibble(.init = 60, .step = 1) |>
+  model(
+    `Preferred ETS`   = ETS(Total_Units_Sold ~ error("M") + trend("A") + season("M")),
+    `Preferred ARIMA` = ARIMA(Total_Units_Sold)
+  ) |>
+  forecast(h = 12) |>
+  accuracy(bmw_ts) |>
+  select(.model, RMSE, MAE, MAPE)
+
+fit_cv
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Archives
+*.zip
+*.rar
+
+# Large data files (optional - uncomment if needed)
+# *.csv
+# *.xlsx
