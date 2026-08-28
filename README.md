@@ -2,7 +2,7 @@
 
 **A Comparative Analysis of ETS and ARIMA Models**
 
-- **Authors**: Chuanlin Qin, Yanjun Pan
+- **Authors**: Chuanlin Qin, Regina Pan
 - **Date**: April 2026
 
 ---
