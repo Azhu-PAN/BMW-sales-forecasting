@@ -3,7 +3,6 @@
 **A Comparative Analysis of ETS and ARIMA Models**
 
 - **Authors**: Chuanlin Qin, Yanjun Pan
-- **Course**: 5248 Business Forecasting
 - **Date**: April 2026
 
 ---
